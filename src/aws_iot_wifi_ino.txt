@@ -1,0 +1,238 @@
+/*
+ * File: aws_iot_wifi_ino
+ * Project: src
+ * File Created: Monday, 5th April 2021 10:24:03 pm
+ * Author: Matthew Bennett (matthew@mlbennett.com)
+ * -----
+ * Last Modified: Monday, 5th April 2021 10:24:03 pm
+ * Modified By: Matthew Bennett (matthew@mlbennett.com>)
+ * -----
+ * Copyright - 2021 
+ * <<license>>
+ */
+
+
+
+From sketch file
+/*
+  AWS IoT WiFi
+
+  This sketch securely connects to an AWS IoT using MQTT over WiFi.
+  It uses a private key stored in the ATECC508A and a public
+  certificate for SSL/TLS authetication.
+
+  It publishes a message every 5 seconds to arduino/outgoing
+  topic and subscribes to messages on the arduino/incoming
+  topic.
+
+  The circuit:
+  - Arduino MKR WiFi 1010 or MKR1000
+
+  The following tutorial on Arduino Project Hub can be used
+  to setup your AWS account and the MKR board:
+
+  https://create.arduino.cc/projecthub/132016/securely-connecting-an-arduino-mkr-wifi-1010-to-aws-iot-core-a9f365
+
+  This example code is in the public domain.
+*/
+
+#include <ArduinoBearSSL.h>
+#include <ArduinoECCX08.h>
+#include <ArduinoMqttClient.h>
+#include <WiFiNINA.h> // change to #include <WiFi101.h> for MKR1000
+
+#include "arduino_secrets.h"
+
+/////// Enter your sensitive data in arduino_secrets.h
+const char ssid[]        = SECRET_SSID;
+const char pass[]        = SECRET_PASS;
+const char broker[]      = SECRET_BROKER;
+const char* certificate  = SECRET_CERTIFICATE;
+
+WiFiClient    wifiClient;            // Used for the TCP socket connection
+BearSSLClient sslClient(wifiClient); // Used for SSL/TLS connection, integrates with ECC508
+MqttClient    mqttClient(sslClient);
+
+unsigned long lastMillis = 0;
+
+
+unsigned long getTime() {
+    // get the current time from the WiFi module  
+    return WiFi.getTime();
+}
+
+
+void connectWiFi() {
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.print(ssid);
+    Serial.print(" ");
+
+    while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
+        // failed, retry
+        Serial.print(".");
+        delay(5000);
+    }
+    Serial.println();
+
+    Serial.println("You're connected to the network");
+    Serial.println();
+}
+
+
+void connectMQTT() {
+    Serial.print("Attempting to MQTT broker: ");
+    Serial.print(broker);
+    Serial.println(" ");
+
+    while (!mqttClient.connect(broker, 8883)) {
+        // failed, retry
+        Serial.print(".");
+        delay(5000);
+    }
+    Serial.println();
+
+    Serial.println("You're connected to the MQTT broker");
+    Serial.println();
+
+    // subscribe to a topic
+    mqttClient.subscribe("arduino/incoming");
+}
+
+void publishMessage() {
+  Serial.println("Publishing message");
+
+  // send message, the Print interface can be used to set the message contents
+  mqttClient.beginMessage("arduino/outgoing");
+  mqttClient.print("hello ");
+  mqttClient.print(millis());
+  mqttClient.endMessage();
+}
+
+void onMessageReceived(int messageSize) {
+  // we received a message, print out the topic and contents
+  Serial.print("Received a message with topic '");
+  Serial.print(mqttClient.messageTopic());
+  Serial.print("', length ");
+  Serial.print(messageSize);
+  Serial.println(" bytes:");
+
+  // use the Stream interface to print the contents
+  while (mqttClient.available()) {
+    Serial.print((char)mqttClient.read());
+  }
+  Serial.println();
+
+  Serial.println();
+}
+
+
+void setup() {
+    Serial.begin(115200);
+    while (!Serial);
+
+    // checks to  see if the crypto chip is working
+    if (!ECCX08.begin()) {
+        Serial.println("No ECCX08 present!");
+        while (1);
+    }
+
+
+    // Set a callback to get the current time
+    // used to validate the servers certificate
+    ArduinoBearSSL.onGetTime(getTime);
+
+    // Set the ECCX08 slot to use for the private key
+    // and the accompanying public certificate for it
+    sslClient.setEccSlot(0, certificate);
+
+    // Optional, set the client id used for MQTT,
+    // each device that is connected to the broker
+    // must have a unique client id. The MQTTClient will generate
+    // a client id for you based on the millis() value if not set
+    //
+    // mqttClient.setId("clientId");
+
+    // Set the message callback, this function is
+    // called when the MQTTClient receives a message
+    mqttClient.onMessage(onMessageReceived);
+}
+
+
+void loop() {
+    if (WiFi.status() != WL_CONNECTED) {
+        connectWiFi();
+    }
+
+    if (!mqttClient.connected()) {
+        // MQTT client is disconnected, connect
+        connectMQTT();
+    }
+
+    // poll for new MQTT messages and send keep alives
+    mqttClient.poll();
+
+    // publish a message roughly every 5 seconds.
+    if (millis() - lastMillis > 5000) {
+        lastMillis = millis();
+
+        publishMessage();
+    }
+}
+
+
+
+
+arduino_secrets.h
+// Fill in  your WiFi networks SSID and password
+#define SECRET_SSID "mlbennett"
+#define SECRET_PASS "9dyfn4DH@vgy76"
+
+// Fill in the hostname of your AWS IoT broker
+#define SECRET_BROKER "a1vrt5jmib7zpp-ats.iot.eu-west-2.amazonaws.com"
+
+// Fill in the boards public certificate
+const char SECRET_CERTIFICATE[] = R"(
+-----BEGIN CERTIFICATE-----
+MIICvDCCAaSgAwIBAgIVAL/NAB5mwRZrHoCV1WcYKnJfr8wIMA0GCSqGSIb3DQEB
+CwUAME0xSzBJBgNVBAsMQkFtYXpvbiBXZWIgU2VydmljZXMgTz1BbWF6b24uY29t
+IEluYy4gTD1TZWF0dGxlIFNUPVdhc2hpbmd0b24gQz1VUzAeFw0yMTAzMjQyMTI1
+MjJaFw00OTEyMzEyMzU5NTlaMEsxCzAJBgNVBAYTAlVLMRUwEwYDVQQIEwxXYXJ3
+aWNrc2hpcmUxEDAOBgNVBAcTB1dhcndpY2sxEzARBgNVBAMTCk5hbm9Jb1RfMDEw
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT+9JK0IiO73nIEw0P6puQ0FzNnT6Nz
+X8HnJOuHo+ZtXArPg+fZTEQmTRG7mt5ak9oc32TcM4LQktI/DLh2Mz77o2AwXjAf
+BgNVHSMEGDAWgBTr9NVgdRcZeSuNbgO4e6vlYQhfKDAdBgNVHQ4EFgQU8zIhyXR8
+fNj8NZBRJ721LJlif5kwDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwDQYJ
+KoZIhvcNAQELBQADggEBADng0XDUMNafM9BnniYgvwURja9vVsWmBPknVDMQbPNe
+IvkPgTQ+apCQaUbUQgwmtm9bo5Hx/E2QyiHH7PIe/NzvWwtcHjZxNl0Uw4NL2qPT
+4m9WuvOuYd4Bk9jtr9BLY42WiVPiExgYlzNMr0kWU69cUkjRJqIpRPsat0kTuxkx
+Tjw4b3VsAUJfDQ4F4IWk+rYnDD+oC/Flzlsl8oh4RZu/vBbY4cAWaPiklK9ot2+4
+/qrtnfoEyGAyowQEMk+j3YP3pg6Yunppo/LaYskfhh+swmNQETNQd6vjaMZqPvy5
+zl6Eq/APpbDUdcgAkluDraBflEvbuELgS5XOwvppG2s=
+-----END CERTIFICATE-----
+)";
+
+
+
+/**********************************
+bool connectAws_old()
+{
+    int status = false;
+    // Configure WiFiClientSecure to use the AWS IoT device credentials
+*    //net.setCACert(AWS_CERT_CA);
+*    //net.setCertificate(AWS_CERT_CRT);
+*    //net.setPrivateKey(AWS_CERT_PRIVATE);
+
+
+    wifiClient.setRootCA((unsigned char*)rootCABuff);
+    wifiClient.setClientCertificate((unsigned char*)certificateBuff, (unsigned char*)privateKeyBuff);
+    BearSSLClient.setEccSlot(0, certificate);
+    client.setServer(mqttServer, 8883);
+    client.setCallback(callback);
+
+    // Connect to the MQTT broker on the AWS endpoint we defined earlier
+*    //client.begin(AWS_IOT_ENDPOINT, 8883, net);
+
+
+    return status;
+}
+****************/
